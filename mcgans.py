@@ -2,6 +2,11 @@ import tensorflow as tf
 import numpy as np
 import input_data
 from tensorflow.python.training import moving_averages
+from modules.sequential import Sequential
+from modules.softmax import Softmax
+from modules.linear import Linear
+from modules.relu import Relu
+from modules.tanh import Tanh
 
 flags = tf.flags
 flags.DEFINE_integer("max_steps", 5000,'Number of steps to run trainer.')
@@ -16,10 +21,26 @@ flags.DEFINE_boolean("relevance_bool", False,'Compute relevances')
 flags.DEFINE_boolean("save_model", True,'Save the trained model')
 flags.DEFINE_boolean("reload_model", False,'Restore the trained model')
 flags.DEFINE_string("checkpoint_dir", 'mnist_gan_model','Checkpoint dir')
-flags.DEFINE_string("critic_iters", 1,'number of critic iters per gen iter')
+flags.DEFINE_string("critic_iters", 5,'number of critic iters per gen iter')
 FLAGS = flags.FLAGS
 CLIP_BOUNDS = [-.01, .01]
 BN_DECAY = 0.999
+
+# class batch_norm(object):
+#   def __init__(self, epsilon=1e-5, momentum = 0.9, name="batch_norm"):
+#     with tf.variable_scope(name):
+#       self.epsilon  = epsilon
+#       self.momentum = momentum
+#       self.name = name
+
+#   def __call__(self, x, train=True):
+#     return tf.contrib.layers.batch_norm(x,
+#                       decay=self.momentum, 
+#                       updates_collections=None,
+#                       epsilon=self.epsilon,
+#                       scale=True,
+#                       is_training=train,
+#                       scope=self.name)
 # UPDATE_OPS_COLLECTION = 'update_ops'
 class Utils():
     def __init__(self, session, checkpoint_dir=None, name="utils"):
@@ -114,26 +135,30 @@ def discriminator(inputs,is_test = False):
 
 # def compute_G_loss(D2):
 #     return tf.nn.sigmoid_cross_entropy_with_logits(logits=D2, labels=tf.ones(tf.shape(D2)))
-
+def nn():
+  return Sequential([Linear(input_dim=784,output_dim=1296, act ='relu', batch_size=FLAGS.batch_size),
+                     Linear(1296, act ='relu'), 
+                     Linear(1296, act ='relu'),
+                     Linear(10, act ='relu')])
 def train():
   mnist = input_data.read_data_sets("data_dir", one_hot = True)
   with tf.Session() as sess:
     with tf.name_scope('input'):
       x = tf.placeholder(tf.float32,[None,784], name='x-input')
-      y = tf.placeholder(tf.float32,[None,10], name='y-input')
+      y_ = tf.placeholder(tf.float32,[None,10], name='y-input')
     with tf.variable_scope('model') as model_scope:
+      net = nn()
+      y = net.forward(x)
+      utils = Utils(sess, "mnist_linear_model")
+      utils.reload_model()
       with tf.variable_scope('generator'):
         G = generator(x)
-        G_params_num = len(tf.trainable_variables())
       with tf.variable_scope('discriminator') as disc_scope:
         D1 = discriminator(y)
         disc_scope.reuse_variables()
         D2 = discriminator(G)
 
-    total_params = tf.trainable_variables()
-    G_params = total_params[:G_params_num]
-    D_params = total_params[G_params_num:]
-    acc = tf.reduce_mean(tf.cast(tf.equal(tf.argmax(G,1),tf.argmax(y,1)), tf.float32))
+    acc = tf.reduce_mean(tf.cast(tf.equal(tf.argmax(y,1),tf.argmax(y_,1)), tf.float32))
     tf.summary.scalar('acc', acc)
     with tf.variable_scope('Loss'):
       # D1_loss, D2_loss = compute_D_loss(D1, D2)
@@ -159,18 +184,22 @@ def train():
       G_writer = tf.summary.FileWriter(FLAGS.summaries_dir + '/G', sess.graph)
       merged = tf.summary.merge_all()
       tf.global_variables_initializer().run()
-      utils = Utils(sess, FLAGS.checkpoint_dir)
+      gans_utils = Utils(sess, FLAGS.checkpoint_dir)
       if FLAGS.reload_model:
-        utils.reload_model()
+        gans_utils.reload_model()
 
-      xt,yt = mnist.test.next_batch(200)
-      test = {x:xt, y:yt}
+      xt,yt = mnist.test.next_batch(FLAGS.batch_size)
+      test = {x:xt, y_:yt}
       for i in range(FLAGS.max_steps):
-        for j in range(FLAGS.critic_iters):
+        if i < 25:
+          d_run = 25
+        else:
+          d_run = FLAGS.critic_iters
+        for j in range(g_run):
           xs, ys = mnist.train.next_batch(FLAGS.batch_size)
-          D_summary, _ , dloss = sess.run([ merged, D_trainer, D_loss], feed_dict={x:xs, y:ys})
+          D_summary, _ , dloss = sess.run([ merged, D_trainer, D_loss], feed_dict={x:xs, y_:ys})
           sess.run(clip_ops)
-        G_summary, _ , gloss = sess.run([merged, G_trainer, G_loss], feed_dict={x:xs, y:ys})
+        G_summary, _ , gloss = sess.run([merged, G_trainer, G_loss], feed_dict={x:xs, y_:ys})
         if i%100==0:
           accuracy = sess.run(acc, test)
           print(gloss.mean(), dloss.mean(),accuracy)
@@ -178,11 +207,11 @@ def train():
         G_writer.add_summary(G_summary, i)
 
       if FLAGS.save_model:
-        utils.save_model()
+        gans_utils.save_model()
       D_writer.close()
       G_writer.close()
-      xt,yt = mnist.test.next_batch(200)
-      test = {x:xt, y:yt}
+      xt,yt = mnist.test.next_batch(FLAGS.batch_size)
+      test = {x:xt, y_:yt}
       accuracy = sess.run(acc, test)
       print("After training, the accuracy is %g" % accuracy)
 
