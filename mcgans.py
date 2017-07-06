@@ -116,8 +116,8 @@ def generator(inputs, is_test = False):
   bn,_ = batchnorm(gl2,'bn2',is_test)
   gl3 = add_layer(bn,800,800,'gl3')
   bn,_ = batchnorm(gl3,'bn3',is_test)
-  gl4 = add_layer(bn,800,10,'gl4',tf.nn.sigmoid)
-  return gl4
+  gl4 = add_layer(bn,800,10,'gl4')
+  return gl4, bn
 
 def discriminator(inputs,is_test = False):
   bn,_ = batchnorm(inputs,'bn0',is_test)
@@ -135,30 +135,24 @@ def discriminator(inputs,is_test = False):
 
 # def compute_G_loss(D2):
 #     return tf.nn.sigmoid_cross_entropy_with_logits(logits=D2, labels=tf.ones(tf.shape(D2)))
-def nn():
-  return Sequential([Linear(input_dim=784,output_dim=1296, act ='relu', batch_size=FLAGS.batch_size),
-                     Linear(1296, act ='relu'), 
-                     Linear(1296, act ='relu'),
-                     Linear(10, act ='relu')])
+
 def train():
   mnist = input_data.read_data_sets("data_dir", one_hot = True)
+  teacher = np.load('teacher_label.npy')
   with tf.Session() as sess:
     with tf.name_scope('input'):
       x = tf.placeholder(tf.float32,[None,784], name='x-input')
-      y_ = tf.placeholder(tf.float32,[None,10], name='y-input')
+      y = tf.placeholder(tf.float32,[None,10], name='y-input')
+      y_ = tf.placeholder(tf.float32,[None,10], name='real-label')
     with tf.variable_scope('model') as model_scope:
-      net = nn()
-      y = net.forward(x)
-      utils = Utils(sess, "mnist_linear_model")
-      utils.reload_model()
       with tf.variable_scope('generator'):
-        G = generator(x)
+        G, bn1 = generator(x)
       with tf.variable_scope('discriminator') as disc_scope:
         D1 = discriminator(y)
         disc_scope.reuse_variables()
         D2 = discriminator(G)
 
-    acc = tf.reduce_mean(tf.cast(tf.equal(tf.argmax(y,1),tf.argmax(y_,1)), tf.float32))
+    acc = tf.reduce_mean(tf.cast(tf.equal(tf.argmax(tf.nn.softmax(G),1),tf.argmax(y_,1)), tf.float32))
     tf.summary.scalar('acc', acc)
     with tf.variable_scope('Loss'):
       # D1_loss, D2_loss = compute_D_loss(D1, D2)
@@ -189,17 +183,20 @@ def train():
         gans_utils.reload_model()
 
       xt,yt = mnist.test.next_batch(FLAGS.batch_size)
-      test = {x:xt, y_:yt}
+      test = {x:2*xt-1, y_:yt, y:teacher[0:FLAGS.batch_size, :]}
+      count = 0
       for i in range(FLAGS.max_steps):
         if i < 25:
-          d_run = 25
+          d_run = 5
         else:
           d_run = FLAGS.critic_iters
-        for j in range(g_run):
-          xs, ys = mnist.train.next_batch(FLAGS.batch_size)
-          D_summary, _ , dloss = sess.run([ merged, D_trainer, D_loss], feed_dict={x:xs, y_:ys})
+        for j in range(d_run):
+          xs, yl = mnist.train.next_batch(FLAGS.batch_size)
+          ys = teacher[count:count+FLAGS.batch_size,:]
+          count += FLAGS.batch_size
+          D_summary, _ , dloss = sess.run([merged, D_trainer, D_loss], feed_dict={x:2*xs-1, y:ys, y_:yl})
           sess.run(clip_ops)
-        G_summary, _ , gloss = sess.run([merged, G_trainer, G_loss], feed_dict={x:xs, y_:ys})
+        G_summary, _ , gloss = sess.run([merged, G_trainer, G_loss], feed_dict={x:2*xs-1, y:ys, y_:yl})
         if i%100==0:
           accuracy = sess.run(acc, test)
           print(gloss.mean(), dloss.mean(),accuracy)
@@ -210,8 +207,6 @@ def train():
         gans_utils.save_model()
       D_writer.close()
       G_writer.close()
-      xt,yt = mnist.test.next_batch(FLAGS.batch_size)
-      test = {x:xt, y_:yt}
       accuracy = sess.run(acc, test)
       print("After training, the accuracy is %g" % accuracy)
 
